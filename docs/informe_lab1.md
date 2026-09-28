@@ -43,19 +43,21 @@
 
 | Métrica | Generación | Almacenamiento (UPDATE) | Ciclo total |
 |---------|------------|---------------------------|-------------|
-| min | | | |
-| max | | | |
-| avg | | | |
-| std | | | |
+| min | 0.010094 | 0.001858 | 0.012183 |
+| max | 1.180173 | 1.077214 | 1.209745 |
+| avg | 0.025478 | 0.003626 | 0.029104 |
+| std | 0.021706 | 0.011395 | 0.025146 |
 
 #### Top-2 (`p2`)
 
 | Métrica | Ambas métricas / query | Euclidiana | Coseno |
 |---------|------------------------|------------|--------|
-| min | | | |
-| max | | | |
-| avg | | | |
-| std | | | |
+| min | 0.016386 | 0.005660 | 0.009973 |
+| max | 0.031977 | 0.016714 | 0.014719 |
+| avg | 0.019518 | 0.007826 | 0.011435 |
+| std | 0.004621 | 0.003192 | 0.001537 |
+
+*(Fetch de los 10k embeddings a Python: 2.999 s, una sola vez.)*
 
 ### 1.3 Respuestas [PQ1]
 
@@ -63,7 +65,7 @@
 En `p0`, la inserción de texto es **estable**: avg ≈ 0.64 ms y std ≈ 0.41 ms, con un max ocasional (~7 ms) atribuible a flushes/WAL. Los embeddings (`p1`) deben medirse aparte: el `UPDATE` de `REAL[384]` aumenta el payload; la generación del modelo suele dominar y variar más con la longitud de frase. Completar la tabla de `p1` tras la ejecución.
 
 **¿Son estables los tiempos de consulta? ¿Diferencias entre métricas?**  
-En `p2` cada query hace el mismo trabajo asintótico (1×`cdist` sobre n vectores). Euclidiana y coseno deberían tener latencias similares; pequeñas diferencias vienen del coste aritmético interno de SciPy. La inestabilidad, si aparece, suele deberse a GC o a cache de CPU, no a PostgreSQL (la BD ya no participa tras el `fetch`).
+Sí, relativamente estables (ambas métricas: avg ≈ 19.5 ms, std ≈ 4.6 ms). Euclidiana (avg ≈ 7.8 ms) fue algo más rápida que coseno (avg ≈ 11.4 ms) en SciPy; la diferencia es pequeña frente al coste dominante del *impedance mismatch*: el `fetch` único de ~3 s para materializar los 10k×384 vectores en Python antes de calcular nada.
 
 **¿Qué mejoraría el rendimiento en PostgreSQL sin Pgvector?**  
 - `COPY` / inserts por lotes (menos round-trips).  
@@ -108,27 +110,29 @@ La mejora real de vecinos cercanos exige un índice vectorial (Pgvector u otro m
 
 | Métrica | Generación | Almacenamiento (update) | Ciclo total |
 |---------|------------|---------------------------|-------------|
-| min | | | |
-| max | | | |
-| avg | | | |
-| std | | | |
+| min | 0.012875 | 0.027309 | 0.042570 |
+| max | 0.790946 | 1.005162 | 1.026780 |
+| avg | 0.040191 | 0.050682 | 0.090873 |
+| std | 0.031354 | 0.032916 | 0.048634 |
 
 #### Top-2 nativo (`c2`)
 
 | Métrica | Ambas / query | Euclidiana (l2) | Coseno |
 |---------|---------------|-----------------|--------|
-| min | | | |
-| max | | | |
-| avg | | | |
-| std | | | |
+| min | 0.007016 | 0.003470 | 0.003394 |
+| max | 0.030647 | 0.025547 | 0.005770 |
+| avg | 0.010631 | 0.006200 | 0.004183 |
+| std | 0.007079 | 0.006803 | 0.000705 |
+
+*(Setup de la colección L2 auxiliar: 15.657 s, no incluido en las métricas de query.)*
 
 ### 2.3 Respuestas [CQ1]
 
 **¿Estables inserciones de texto y embeddings?**  
-En `c0`, avg ≈ 39 ms y std ≈ 8.6 ms: **menos estable y ~60× más lento** que `p0` por fila, porque cada `add` actualiza el índice HNSW aunque el embedding sea placeholder. Completar `c1` tras la ejecución; la generación debería parecerse a `p1` (mismo modelo).
+En `c0`, avg ≈ 39 ms y std ≈ 8.6 ms: **menos estable y ~60× más lento** que `p0` por fila, porque cada `add` actualiza el índice HNSW aunque el embedding sea placeholder. En `c1`, el **almacenamiento** (avg ≈ 51 ms) supera a la generación (avg ≈ 40 ms): actualizar el índice HNSW con vectores reales es más caro que el `UPDATE REAL[]` de PostgreSQL (avg ≈ 3.6 ms). La generación es del mismo orden que en `p1` (mismo modelo).
 
 **¿Estables las queries? ¿Diferencias entre métricas?**  
-Las queries nativas usan ANN (HNSW): latencia mucho menor que el brute-force de `p2`, y suele ser estable. Euclidiana (colección `l2`) vs coseno (colección `cosine`) pueden diferir ligeramente por la geometría del índice, no por un traslado a Python.
+Las queries nativas son más rápidas que el brute-force de `p2` (ambas métricas: avg ≈ 10.6 ms vs ≈ 19.5 ms en PostgreSQL+Python; y **sin** el fetch de ~3 s). El coseno (avg ≈ 4.2 ms, std ≈ 0.7 ms) fue más estable que L2 (avg ≈ 6.2 ms, std ≈ 6.8 ms, con algún max más alto). No hay traslado masivo de vectores al cliente: el índice HNSW absorbe el k-NN.
 
 **¿Se pueden medir por separado texto y embeddings en Chroma?**  
 **No de forma nativa:** el `add` por defecto embebe y guarda juntos. En este lab **sí** lo separamos artificialmente: `c0` con placeholders (sin modelo) y `c1` con `update` de vectores reales. Eso responde al enunciado y evidencia que la API acopla ambos pasos.
@@ -138,23 +142,77 @@ Inserción por lotes (`add` multi-id), ajustar `ef` / parámetros HNSW, una sola
 
 ---
 
-## 3. Discusión: PostgreSQL vs Chroma (impedance mismatch)
+## 3. Pgvector (opcional)
 
-| Aspecto | PostgreSQL (sin Pgvector) | Chroma |
-|---------|---------------------------|--------|
-| Modelo de datos | Relacional + `REAL[]` opaco | Colección de documentos + vectores indexados |
-| Almacenar texto | Natural (`TEXT`) | Natural (`documents`), con matiz de embeddings obligatorios |
-| Almacenar vectores | Mapeo a array SQL (mismatch) | Tipo de primera clase |
-| Top-k similitud | En el **cliente** (mismatch alto) | En el **motor** (HNSW) |
-| Código de distancias | SciPy/NumPy explícito | Casi inexistente |
-| Pros | Madurez SQL, transacciones, ecosistema | Bajo mismatch vectorial, queries simples y rápidas |
-| Contras | No escala el k-NN sin extensión; más código | Menos flexible para SQL analítico; una métrica/colección |
+### 3.1 Decisiones de diseño (impedance mismatch)
 
-**Conclusión:** el lab ilustra que cuando la naturaleza de los datos (vectores) no coincide con el modelo interno de la BD (tablas/arrays genéricos), el coste de traducción —en tiempo, memoria y complejidad de código— es el *impedance mismatch*. Chroma reduce ese gap para embeddings; PostgreSQL sin Pgvector lo maximiza en la fase de consulta.
+| Decisión | Motivación |
+|----------|------------|
+| Tabla propia `corpus_pgvector` | No pisa `corpus` (`REAL[]`) de la parte obligatoria; comparación limpia. |
+| Tipo `vector(384)` | Representación nativa de embeddings (cierra el mismatch del array SQL). |
+| Mismo corpus, modelo y `QUERY_IDS` | Comparación justa con p*/c*. |
+| Operadores `<->` (L2) y `<=>` (cosine) | Mismas dos métricas; k-NN **en el servidor**. |
+| Índices HNSW (`vector_l2_ops` + `vector_cosine_ops`) tras `g1` | Aceleran top-2 nativo en `g2` (análogo al índice de Chroma). |
+| Scripts `g0`/`g1`/`g2` espejo de p0/p1/p2 | Mismas métricas min/max/avg/std exigidas por el enunciado. |
+
+### 3.2 Resultados experimentales
+
+> Completar tras instalar Pgvector (`docs/pgvector_setup.md` / `install_pgvector_windows.ps1` como Admin) y ejecutar `g0.py`, `g1.py`, `g2.py`.
+
+#### Inserción de texto (`g0`)
+
+| Métrica | Valor (s) |
+|---------|-----------|
+| min | |
+| max | |
+| avg | |
+| std | |
+
+#### Almacenamiento de embeddings (`g1` — UPDATE vector)
+
+| Métrica | Generación | Almacenamiento (UPDATE) | Ciclo total |
+|---------|------------|---------------------------|-------------|
+| min | | | |
+| max | | | |
+| avg | | | |
+| std | | | |
+
+#### Top-2 nativo (`g2`)
+
+| Métrica | Ambas / query | Euclidiana (`<->`) | Coseno (`<=>`) |
+|---------|---------------|--------------------|----------------|
+| min | | | |
+| max | | | |
+| avg | | | |
+| std | | | |
+
+### 3.3 Conclusiones Pgvector vs Chroma
+
+| | Pgvector | Chroma |
+|--|----------|--------|
+| Pros | SQL + transacciones + JOINs; vectores en el mismo motor que datos relacionales; operadores e índices documentados | API simple orientada a embeddings; persistencia local ligera; menos SQL que aprender |
+| Contras | Hay que instalar extensión en el servidor; tuning HNSW en SQL; Windows no trae binario oficial | Menos expresividad relacional; una métrica por colección (aquí resolvimos con `corpus_l2`) |
+| Impedance mismatch | Bajo para vectores (tipo + índice nativos), manteniendo el modelo relacional | Bajo para vectores; motor dedicado |
 
 ---
 
-## 4. Cómo reproducir
+## 4. Discusión: PostgreSQL vs Chroma vs Pgvector
+
+| Aspecto | PostgreSQL (sin Pgvector) | Chroma | Pgvector |
+|---------|---------------------------|--------|----------|
+| Modelo de datos | Relacional + `REAL[]` opaco | Colección + vectores indexados | Relacional + `vector(N)` |
+| Almacenar texto | Natural (`TEXT`) | Natural (`documents`) | Natural (`TEXT`) |
+| Almacenar vectores | Array SQL (mismatch) | Tipo de primera clase | Tipo nativo extensión |
+| Top-k similitud | Cliente (SciPy) | Motor (HNSW) | Motor (`<->` / `<=>` + HNSW) |
+| Código de distancias | Explícito en Python | Mínimo | SQL corto |
+| Pros | Madurez SQL | Bajo mismatch, API simple | SQL + vectores juntos |
+| Contras | k-NN no escala | Menos SQL analítico | Setup de extensión |
+
+**Conclusión:** sin Pgvector, PostgreSQL maximiza el mismatch en consulta. Chroma y Pgvector lo reducen con índices nativos; Chroma es un motor vectorial dedicado, Pgvector acerca ese modelo al ecosistema SQL.
+
+---
+
+## 5. Cómo reproducir
 
 ```bash
 python -m venv venv
@@ -173,12 +231,12 @@ python p2.py
 python c0.py
 python c1.py
 python c2.py
+
+# Pgvector (opcional)
+# Admin: .\install_pgvector_windows.ps1  → reiniciar servicio → CREATE EXTENSION vector;
+python g0.py
+python g1.py
+python g2.py
 ```
 
 Opcional: `python run_experiments.py` ejecuta la cadena y guarda salidas en `results/`.
-
----
-
-## 5. Parte opcional (Pgvector)
-
-No incluida en esta entrega. Si se añade (`g0`–`g2`), comparar tiempos de k-NN nativo en PostgreSQL+Pgvector frente a Chroma y discutir pros/cons (integración SQL vs motor vectorial dedicado).

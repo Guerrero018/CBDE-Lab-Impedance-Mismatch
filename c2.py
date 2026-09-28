@@ -73,11 +73,18 @@ def ensure_l2_collection(
     )
 
     data = source.get(include=["documents", "embeddings"])
-    ids = data.get("ids") or []
-    documents = data.get("documents") or []
-    embeddings = data.get("embeddings") or []
+    # Ojo: embeddings puede ser ndarray; no usar `x or []` (ambigüedad bool de NumPy).
+    ids = list(data.get("ids") or [])
+    documents = data.get("documents")
+    embeddings = data.get("embeddings")
+    if documents is None:
+        documents = []
+    if embeddings is None:
+        raise RuntimeError(
+            f"Colección '{COLLECTION_COSINE}' sin embeddings. Ejecuta c1.py primero."
+        )
 
-    if not ids:
+    if len(ids) == 0:
         raise RuntimeError(
             f"Colección '{COLLECTION_COSINE}' vacía. Ejecuta c0.py y c1.py primero."
         )
@@ -85,10 +92,14 @@ def ensure_l2_collection(
     print(f"      Copiando {len(ids)} items a '{COLLECTION_L2}' (espacio l2)...")
     for start in range(0, len(ids), BATCH_SIZE):
         end = start + BATCH_SIZE
+        batch_emb = embeddings[start:end]
+        # Chroma acepta list[list[float]]; convertimos por si viene como ndarray
+        if hasattr(batch_emb, "tolist"):
+            batch_emb = batch_emb.tolist()
         col_l2.add(
             ids=ids[start:end],
-            documents=documents[start:end],
-            embeddings=embeddings[start:end],
+            documents=list(documents[start:end]),
+            embeddings=batch_emb,
         )
         print(f"      L2 progreso: {min(end, len(ids))}/{len(ids)}")
 
@@ -100,7 +111,7 @@ def get_query_item(
 ) -> Tuple[str, List[float]]:
     """Obtiene (documento, embedding) de una frase consulta por id."""
     got = collection.get(ids=[query_id], include=["documents", "embeddings"])
-    if not got["ids"]:
+    if not got.get("ids"):
         raise RuntimeError(f"QUERY_ID {query_id} no existe en Chroma.")
     doc = got["documents"][0]
     emb = got["embeddings"][0]
@@ -108,6 +119,8 @@ def get_query_item(
         raise RuntimeError(
             f"QUERY_ID {query_id} no tiene embedding. Ejecuta c1.py primero."
         )
+    if hasattr(emb, "tolist"):
+        emb = emb.tolist()
     return doc, list(emb)
 
 
