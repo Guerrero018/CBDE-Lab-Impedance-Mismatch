@@ -21,8 +21,8 @@ RESULTS = ROOT / "results"
 VENV_PY = ROOT / "venv" / "Scripts" / "python.exe"
 PY = str(VENV_PY if VENV_PY.exists() else sys.executable)
 
-FULL_ORDER = ["p0", "p1", "p2", "c0", "c1", "c2"]
-EMBEDDING_SCRIPTS = {"p1", "c1"}
+FULL_ORDER = ["p0", "p1", "p2", "c0", "c1", "c2", "g0", "g1", "g2"]
+EMBEDDING_SCRIPTS = {"p1", "c1", "g1"}
 
 
 def run_one(name: str) -> int:
